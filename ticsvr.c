@@ -27,10 +27,11 @@ int main(int argc, char **argv)
     extern void delete(int fd);
     extern void assign(int fd, int player_type, int *replacement, int *turn);
     extern void updateboard();
-    extern void validmove(int index, int *turn, int p1, int p2);
+    extern void validmove(int index, int *turn, int p1, int p2, char *adr);
     extern void validgame(int *turn, int *p1, int *p2);
-    extern void announcement(char *message, int length);
-    extern void singlemessage(int fd, char *message, int length);
+    extern void announcement(char *message);
+    extern void singlemessage(int fd, char *message);
+    extern void chatmessage(int sender, char *msg);
 
     int c;
     int status = 0;
@@ -78,11 +79,6 @@ int main(int argc, char **argv)
         perror("bind");
         return 1;
     }
-    // if (listen(fd, 5))
-    // {
-    //     perror("listen");
-    //     return 1;
-    // }
 
     size = sizeof q;
 
@@ -93,25 +89,8 @@ int main(int argc, char **argv)
 
     fd_set fds;
 
-    // FD_ZERO(&fds);
-
-    // if ((clientfd1 = accept(fd, (struct sockaddr *)&q, &size)) < 0)
-    // {
-    //     perror("accept");
-    //     return 1;
-    // }
-    // showboard(clientfd1);
-    // insert(clientfd1);
-
-    // if ((clientfd2 = accept(fd, (struct sockaddr *)&q, &size)) < 0)
-    // {
-    //     perror("accept");
-    //     return 1;
-    // }
-    // showboard(clientfd2);
-    // insert(clientfd2);
-
     maxfd = 0;
+    char *msg;
 
     while (!listen(fd, 5))
     {
@@ -139,23 +118,33 @@ int main(int argc, char **argv)
             struct in_addr adr = ((struct sockaddr_in *)&q)->sin_addr;
 
             printf("new connection from %s\n", inet_ntoa(adr));
+            
+            showboard(clientfd);
 
             if (p1 < 0)
             {
+                msg = "You now get to play! You are now x.\r\n";
                 p1 = clientfd;
                 turn = turn < 0 ? p1 : turn;
                 printf("client from %s is now x\n", inet_ntoa(adr));
-                singlemessage(clientfd, "You're playing as x!\r\n", 22);
             }
             else if (p2 < 0)
             {
+                msg = "You now get to play! You are now o.\r\n";
                 p2 = clientfd;
                 printf("client from %s is now o\n", inet_ntoa(adr));
-                singlemessage(clientfd, "You're playing as o!\r\n", 22);
             }
 
-            showboard(clientfd);
-            turn == p1 ? singlemessage(clientfd, "It's x turn!\r\n", 14) : singlemessage(clientfd, "It's o turn!\r\n", 14);
+            singlemessage(clientfd, msg);
+
+            if (turn == p1)
+                msg = "It's x's turn!\r\n";
+            else
+                msg = "It's o's turn!\r\n";
+            
+            singlemessage(clientfd, msg);
+            msg = "";
+            
 
             insert(clientfd, adr);
         }
@@ -175,7 +164,7 @@ int main(int argc, char **argv)
                     }
                     else if (s == 0)
                     {
-                        printf("cient disconnected from: %s\n", inet_ntoa(p->adr));
+                        printf("disconnecting client from %s\n", inet_ntoa(p->adr));
                         int temp = p->fd;
                         close(p->fd);
                         delete (p->fd);
@@ -190,19 +179,22 @@ int main(int argc, char **argv)
                     bytes_in_buf += s;
                     while ((nextpos = extractline(buf, bytes_in_buf)))
                     {
-                        if (strlen(buf) == 1 && 0 <= buf[0] - '0' && 9 >= buf[0] - '0')
+                        if (strlen(buf) == 1 && 0 <= buf[0] - '0' && 9 >= buf[0] - '0' && buf[0] != '0')
                         {
+                            int index = buf[0] - '0' - 1;
                             if (p1 == p->fd && turn == p1)
-                                validmove(buf[0] - '0' - 1, &turn, p1, p2);
+                                validmove(index, &turn, p1, p2, inet_ntoa(p->adr));
                             else if (p2 == p->fd && turn == p2)
-                                validmove(buf[0] - '0' - 1, &turn, p1, p2);
+                                validmove(index, &turn, p1, p2, inet_ntoa(p->adr));
                             else
-                                singlemessage(p->fd, "It's not your turn yet!\r\n", 25);
-
+                            {
+                                printf("%s tries to make move %d, but it's not their turn\n", inet_ntoa(p->adr), index + 1);
+                                singlemessage(p->fd, "It's not your turn yet!\r\n");
+                            }
                             validgame(&turn, &p1, &p2);
                         }
                         else
-                            printf("chat message: %s\n", buf);
+                            chatmessage(p->fd, buf);
 
                         bytes_in_buf -= nextpos - buf;
                         memmove(buf, nextpos, bytes_in_buf);
@@ -214,6 +206,7 @@ int main(int argc, char **argv)
     }
 
     perror("listen");
+    status = 1;
 
     return status;
 }
@@ -245,11 +238,11 @@ char *extractline(char *p, int size)
     }
 }
 
-void announcement(char *message, int length)
+void announcement(char *message)
 {
     for (struct item *p = head; p; p = p->next)
     {
-        if (write(p->fd, message, length) != length)
+        if (write(p->fd, message, strlen(message)) != strlen(message))
         {
             perror("write");
             exit(1);
@@ -257,13 +250,27 @@ void announcement(char *message, int length)
     }
 }
 
-void singlemessage(int fd, char *message, int length)
+void singlemessage(int fd, char *message)
 {
-    if (write(fd, message, length) != length)
+    if (write(fd, message, strlen(message)) != strlen(message))
     {
         perror("write");
         exit(1);
     }
+}
+
+void chatmessage(int sender, char *msg)
+{
+    char format_msg[strlen(msg) + 3];
+
+    strcpy(format_msg, msg);
+    strcat(format_msg, "\r\n");
+
+    for (struct item *p = head; p; p = p->next)
+        if (p->fd != sender)
+            singlemessage(p->fd, format_msg);
+
+    printf("char message: %s\n", msg);
 }
 
 void showboard(int fd)
@@ -292,27 +299,41 @@ void updateboard()
         showboard(p->fd);
 }
 
-void validmove(int index, int *turn, int p1, int p2)
+void validmove(int index, int *turn, int p1, int p2, char *adr)
 {
-    extern void announcement(char *message, int length);
+    extern void announcement(char *message);
+    char *msg1;
+    char *temp;
 
     if ('0' <= board[index] && board[index] <= '9')
     {
         if (*turn == p1)
         {
             board[index] = 'x';
-            announcement("It's o turn!\r\n", 14);
+            printf("%s (x) makes move %d\n", adr, index + 1);
+            msg1 = "It's o turn!\r\n";
+            temp = "x makes move ";
         }
         else if (*turn == p2)
         {
             board[index] = 'o';
-            announcement("It's x turn!\r\n", 14);
+            printf("%s (o) makes move %d\n", adr, index + 1);
+            msg1 = "It's x turn!\r\n";
+            temp = "o makes move ";
         }
-        *turn = *turn == p1 ? p2 : p1;
+
+        char msg2[strlen(temp) + 4];
+        char rest[4] = {'0' + index + 1, '\r', '\n', '\0'};
+        strcpy(msg2, temp);
+        strcat(msg2, rest);
+
+        announcement(msg2);
         updateboard();
+        announcement(msg1);
+        *turn = *turn == p1 ? p2 : p1;
     }
     else
-        printf("the space is taken!\n");
+        printf("%s tries to make move %d, but that space is taken\n", adr, index + 1);
 }
 
 void validgame(int *turn, int *p1, int *p2)
@@ -323,11 +344,32 @@ void validgame(int *turn, int *p1, int *p2)
     char c;
     if ((c = game_is_over()))
     {
-        printf("the winner is: %c\n", c);
+        printf("Game over!\n");
+
+        if (c == 'x' || c == 'o')
+        {
+            if (c == 'x')
+                announcement("x wins.\r\n");
+            else
+                announcement("o wins.\r\n");
+            printf("%c wins.\n", c);
+        }
+        else 
+        {
+            announcement("It's a tie\r\n");
+            printf("It's a tie\n");
+        }
+
+        announcement("Let's play again!\r\n");
+
         int temp = *p1;
         *p1 = *p2;
         *p2 = temp;
         *turn = *p1;
+
+        singlemessage(*p1, "You are x.\r\n");
+        singlemessage(*p2, "You are o.\r\n");
+
         resetboard();
     }
 }
@@ -336,7 +378,7 @@ void resetboard()
 {
     extern void updatebaord();
     for (int i = 0; i < 9; i++)
-        board[i] = '0' + i;
+        board[i] = '0' + i + 1;
     updateboard();
 }
 
@@ -427,6 +469,7 @@ void delete (int fd)
 
 void assign(int fd, int player_type, int *replacement, int *turn)
 {
+    char *msg;
     for (struct item *p = head; p; p = p->next)
     {
         if (p->fd != fd)
@@ -434,13 +477,15 @@ void assign(int fd, int player_type, int *replacement, int *turn)
             if (player_type)
             {
                 printf("client from %s is now o\n", inet_ntoa(p->adr));
-                singlemessage(p->fd, "You're playing as o!\r\n", 22);
+                msg = "You now get to play! You are now o.\r\n";
             }
             else
             {
                 printf("client from %s is now x\n", inet_ntoa(p->adr));
-                singlemessage(p->fd, "You're playing as x!\r\n", 22);
+                msg = "You now get to play! You are now x.\r\n";
             }
+
+            singlemessage(p->fd, msg);
 
             *turn = *turn == *replacement ? p->fd : *turn;
             *replacement = p->fd;
@@ -448,13 +493,4 @@ void assign(int fd, int player_type, int *replacement, int *turn)
         }
     }
     *replacement = -1;
-}
-
-int search(int fd)
-{
-    struct item *p;
-    for (p = head; p && p->fd; p = p->next);
-    if (p && p->fd == fd)
-        return 1;
-    return 0;
 }
